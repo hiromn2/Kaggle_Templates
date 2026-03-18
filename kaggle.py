@@ -28,127 +28,101 @@ Notes:
 - This code is designed to be safe against leakage and train/test mismatch.
 """
 
-# What I understand
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sys
+import time
+import warnings
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from pprint import pprint
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import joblib
 import numpy as np
 import pandas as pd
 
-import os
-import sys #System-level hooks; in that script it’s imported but not essential (you can remove it unless you later want to handle exit codes, stdout/stderr behaviors, etc.).
-import time #Timestamping logs and timing CV runs.
-from sklearn.pipeline import Pipeline #Chains steps into one object with .fit() / .predict(). #Ensures preprocessing is applied consistently in training and testing.
-from sklearn.preprocessing import OneHotEncoder, RobustScaler #Converts categorical columns to numeric indicator columns. # handle_unknown="ignore" prevents crashing when test contains categories not seen in training. #Scales numeric features using median and IQR (robust to outliers). # Helps linear models (Ridge/ElasticNet) because regularization depends on feature scale. # In the script it uses with_centering=False to keep things sparse-friendly.
-
-from sklearn.linear_model import Ridge, ElasticNet
-from sklearn.ensemble import HistGradientBoostingRegressor
-
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import KFold
-
-from sklearn.compose import ColumnTransformer, TransformedTargetRegressor #Applies different preprocessing pipelines to different column subsets.
-from sklearn.impute import SimpleImputer #Fills missing values. Median or most frequent. add_indicator = True
-
-# What I do not
-from __future__ import annotations #Makes type annotations behave more cleanly # (treats annotations as strings internally), which avoids some forward-reference # issues and can reduce runtime overhead.
-import argparse #Parses command-line arguments (--train, --test, --out, etc.).
-import json #Writes results (CV scores, best model, params) to a .json log file.
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
-
-
-
-from pathlib import Path
-from pprint import pprint
-from collections import defaultdict
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union, Callable
-import logging
-import warnings
-import json
-import time
-
-
-from sklearn.preprocessing import (
-    OneHotEncoder,
-    OrdinalEncoder,
-    RobustScaler,
-    StandardScaler,
-    MinMaxScaler,
-    PolynomialFeatures,
-    FunctionTransformer
-)
-from sklearn.impute import SimpleImputer, MissingIndicator
-from sklearn.compose import ColumnTransformer, TransformedTargetRegressor, make_column_selector
-from sklearn.pipeline import Pipeline
-
-from sklearn.model_selection import (
-    train_test_split,
-    KFold,
-    StratifiedKFold,
-    GroupKFold,
-    RepeatedKFold,
-    cross_val_score,
-    cross_validate,
-    GridSearchCV,
-    RandomizedSearchCV
-)
-
-from sklearn.metrics import (
-    mean_squared_error,
-    mean_absolute_error,
-    r2_score,
-    root_mean_squared_error,
-    mean_absolute_percentage_error,
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    roc_auc_score,
-    log_loss,
-    confusion_matrix,
-    classification_report,
-    roc_curve,
-    precision_recall_curve
-)
-
-from sklearn.linear_model import (
-    LinearRegression,
-    Ridge,
-    Lasso,
-    ElasticNet,
-    LogisticRegression
-)
-
-from sklearn.ensemble import (
-    RandomForestRegressor,
-    RandomForestClassifier,
-    GradientBoostingRegressor,
-    GradientBoostingClassifier,
-    HistGradientBoostingRegressor,
-    HistGradientBoostingClassifier,
-    ExtraTreesRegressor,
-    ExtraTreesClassifier
-)
-
-from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier
-from sklearn.svm import SVR, SVC
-from sklearn.neighbors import KNeighborsRegressor, KNeighborsClassifier
-from sklearn.dummy import DummyRegressor, DummyClassifier
-
-from sklearn.feature_selection import (
-    SelectKBest,
-    f_regression,
-    f_classif,
-    mutual_info_regression,
-    mutual_info_classif,
-    RFE
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.compose import (
+    ColumnTransformer,
+    TransformedTargetRegressor,
+    make_column_selector,
 )
 from sklearn.decomposition import PCA
-
-from sklearn.inspection import permutation_importance, PartialDependenceDisplay
-from sklearn.calibration import CalibratedClassifierCV
-
-
-
+from sklearn.dummy import DummyClassifier, DummyRegressor
+from sklearn.ensemble import (
+    ExtraTreesClassifier,
+    ExtraTreesRegressor,
+    GradientBoostingClassifier,
+    GradientBoostingRegressor,
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
+from sklearn.feature_selection import (
+    RFE,
+    SelectKBest,
+    f_classif,
+    f_regression,
+    mutual_info_classif,
+    mutual_info_regression,
+)
+from sklearn.impute import MissingIndicator, SimpleImputer
+from sklearn.inspection import PartialDependenceDisplay, permutation_importance
+from sklearn.linear_model import (
+    ElasticNet,
+    Lasso,
+    LinearRegression,
+    LogisticRegression,
+    Ridge,
+)
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    f1_score,
+    log_loss,
+    mean_absolute_error,
+    mean_absolute_percentage_error,
+    mean_squared_error,
+    precision_recall_curve,
+    precision_score,
+    r2_score,
+    recall_score,
+    roc_auc_score,
+    roc_curve,
+    root_mean_squared_error,
+)
+from sklearn.model_selection import (
+    GridSearchCV,
+    GroupKFold,
+    KFold,
+    RandomizedSearchCV,
+    RepeatedKFold,
+    StratifiedKFold,
+    cross_val_score,
+    cross_validate,
+    train_test_split,
+)
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import (
+    FunctionTransformer,
+    MinMaxScaler,
+    OneHotEncoder,
+    OrdinalEncoder,
+    PolynomialFeatures,
+    RobustScaler,
+    StandardScaler,
+)
+from sklearn.svm import SVC, SVR
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 
 # -----------------------------
